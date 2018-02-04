@@ -37,4 +37,12 @@
           page="de.marw.cmake.cdt.ui.language.settings.providers.CompileCommandsJsonParserOptionPage">
     </class-association>
  </extension>
+ <extension
+       point="org.eclipse.ptp.rdt.sync.core.synchronizeService">
+    <synchronizeService
+          class="de.marw.cmake.AbstractSynchronizeService:1"
+          id="de.marw.cmake.synchronizeService1"
+          name="de.marw.cmake.synchronizeService1">
+    </synchronizeService>
+ </extension>
 </plugin>

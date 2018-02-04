@@ -197,7 +197,12 @@ class ToolArgumentParsers {
             // prepend CWD
             name = cwd.append(path).toOSString();
           }
-
+//          System.out.println("-I: " + name);
+          
+          
+          
+//          name = "//kesch/" + name;
+          System.out.println("-I: " + name);
           final ICLanguageSettingEntry entry = CDataUtil.createCIncludePathEntry(name,
               ICSettingEntry.BUILTIN | ICSettingEntry.READONLY);
           returnedEntries.add(entry);
@@ -306,6 +311,7 @@ class ToolArgumentParsers {
         matcher.reset(argsLine);
         if (matcher.lookingAt()) {
           final String name = matcher.group(oMatcher.nameGroup);
+          System.out.println("include path: " + name);
           final ICLanguageSettingEntry entry = CDataUtil.createCIncludePathEntry(name,
               ICSettingEntry.BUILTIN | ICSettingEntry.READONLY);
           returnedEntries.add(entry);

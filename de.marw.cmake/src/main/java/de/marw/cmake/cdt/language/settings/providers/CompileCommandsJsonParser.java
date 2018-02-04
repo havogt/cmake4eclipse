@@ -17,6 +17,7 @@ import java.io.Reader;
 import java.util.List;
 import java.util.Map;
 import java.util.WeakHashMap;
+import java.util.Collections;
 
 import org.eclipse.cdt.build.core.scannerconfig.ScannerConfigNature;
 import org.eclipse.cdt.core.CCorePlugin;
@@ -29,10 +30,12 @@ import org.eclipse.cdt.core.language.settings.providers.IWorkingDirectoryTracker
 import org.eclipse.cdt.core.language.settings.providers.LanguageSettingsSerializableProvider;
 import org.eclipse.cdt.core.language.settings.providers.LanguageSettingsStorage;
 import org.eclipse.cdt.core.model.CoreModel;
+import org.eclipse.cdt.core.settings.model.CIncludePathEntry;
 import org.eclipse.cdt.core.settings.model.ICConfigurationDescription;
 import org.eclipse.cdt.core.settings.model.ICLanguageSettingEntry;
 import org.eclipse.cdt.core.settings.model.ICProjectDescription;
 import org.eclipse.cdt.core.settings.model.ICSettingEntry;
+import org.eclipse.cdt.core.settings.model.util.CDataUtil;
 import org.eclipse.core.resources.IFile;
 import org.eclipse.core.resources.IMarker;
 import org.eclipse.core.resources.IProject;
@@ -47,6 +50,10 @@ import org.eclipse.core.runtime.NullProgressMonitor;
 import org.eclipse.core.runtime.Path;
 import org.eclipse.core.runtime.Status;
 import org.eclipse.jetty.util.ajax.JSON;
+import org.eclipse.ptp.rdt.sync.core.SyncConfig;
+import org.eclipse.ptp.rdt.sync.core.SyncConfigManager;
+import org.eclipse.ptp.rdt.sync.core.exceptions.MissingConnectionException;
+import org.eclipse.remote.core.IRemoteConnection;
 
 import de.marw.cmake.CMakePlugin;
 
@@ -167,7 +174,7 @@ public class CompileCommandsJsonParser extends LanguageSettingsSerializableProvi
    * @throws CoreException
    */
   private void tryParseJson(boolean initializingWorkbench) throws CoreException {
-
+	System.out.println("tryParseJson called");
     // If getBuilderCWD() returns a workspace relative path, it is garbled.
     // It returns '${workspace_loc:/my-project-name}'. Additionally, it returns
     // null on a project with makeNature.
@@ -182,6 +189,7 @@ public class CompileCommandsJsonParser extends LanguageSettingsSerializableProvi
     if (location != null) {
       final File jsonFile = location.toFile();
       if (jsonFile.exists()) {
+    	System.out.println("jsonFile.exists()");
         // file exists on disk...
         final long tsJsonModified = jsonFile.lastModified();
 
@@ -197,6 +205,7 @@ public class CompileCommandsJsonParser extends LanguageSettingsSerializableProvi
             project.deleteMarkers(MARKER_ID, false, IResource.DEPTH_INFINITE);
           }
           try {
+        	System.out.println("parse file...");
             // parse file...
             JSON parser = new JSON();
             Reader in = new FileReader(jsonFile);
@@ -274,15 +283,39 @@ public class CompileCommandsJsonParser extends LanguageSettingsSerializableProvi
   private void processJsonEntry(TimestampedLanguageSettingsStorage storage, Map<?, ?> sourceFileInfo, IFile jsonFile)
       throws CoreException {
 
+	  final IProject project = currentCfgDescription.getProjectDescription().getProject();
+	  SyncConfig config = SyncConfigManager.getActive(project);
+		if (config.getSyncProviderId() == null) {
+			// For local configurations, no special processing is needed.
+			return;
+		}
+	
+		IRemoteConnection conn = null;
+		try {
+			conn = config.getRemoteConnection();
+		} catch (MissingConnectionException e1) {
+			// Impossible to build includes properly without connection name
+			return;
+		}
+	  
     if (sourceFileInfo.containsKey("file") && sourceFileInfo.containsKey("command")
         && sourceFileInfo.containsKey("directory")) {
-      final String file = sourceFileInfo.get("file").toString();
+      String file = sourceFileInfo.get("file").toString();
       if (file != null && !file.isEmpty()) {
+    	System.out.println("file: " + file);
         final String cmdLine = sourceFileInfo.get("command").toString();
         if (cmdLine != null && !cmdLine.isEmpty()) {
+          System.out.println("cmdLine: " + cmdLine);
+          
+          String remotePath = file;
+	      String workspacePath = this.getWorkspacePath(remotePath, config.getLocation(project));
+          
+          file = workspacePath;
+          System.out.println("file now: " + file);
           final IFile[] files = ResourcesPlugin.getWorkspace().getRoot()
               .findFilesForLocationURI(new File(file).toURI());
           if (files.length > 0) {
+        	System.out.println("file: " + files.toString());
             ParserDetection.ParserDetectionResult pdr = fastDetermineDetector(cmdLine);
             if (pdr != null) {
               // found a matching command-line parser
@@ -293,6 +326,7 @@ public class CompileCommandsJsonParser extends LanguageSettingsSerializableProvi
               IPath cwd = cwdStr != null? Path.fromOSString(cwdStr): new Path("");;
               processCommandLine(storage, pdr.getDetectorWithMethod().getDetector().getParser(), files[0], cwd,
                   pdr.getReducedCommandLine());
+              System.out.println("File found: " + cwdStr);
             } else {
               // no matching parser found
               String message = "No parser for command '" + cmdLine + "'. " + WORKBENCH_WILL_NOT_KNOW_ALL_MSG;
@@ -308,6 +342,19 @@ public class CompileCommandsJsonParser extends LanguageSettingsSerializableProvi
         + WORKBENCH_WILL_NOT_KNOW_ALL_MSG;
     createMarker(jsonFile, msg);
   }
+  
+	// Get the local workspace path for the given remote path and root directory. Neither parameter may be null.
+	// Returns the new path or null if the remote root is not a prefix of the remote path.
+	private String getWorkspacePath(String remotePathString, String remoteRootString) {
+		Path remotePath = new Path(remotePathString);
+		Path remoteRoot = new Path(remoteRootString);
+		if (!remoteRoot.isPrefixOf(remotePath)) {
+			return null;
+		}
+		final IProject currentProject = currentCfgDescription.getProjectDescription().getProject();
+		IPath localRoot = currentProject.getLocation();
+		return remotePath.toOSString().replaceFirst(remoteRoot.toOSString(), localRoot.toOSString());
+	}
 
   private static void createMarker(IFile file, String message) throws CoreException {
     IMarker marker;
@@ -402,10 +449,29 @@ public class CompileCommandsJsonParser extends LanguageSettingsSerializableProvi
    */
   private void processCommandLine(TimestampedLanguageSettingsStorage storage, IToolCommandlineParser cmdlineParser,
       IFile sourceFile, IPath cwd, String line) {
+	  final IProject project = currentCfgDescription.getProjectDescription().getProject();
+	  SyncConfig config = SyncConfigManager.getActive(project);
+		if (config.getSyncProviderId() == null) {
+			// For local configurations, no special processing is needed.
+			return;
+		}
+	
+		IRemoteConnection conn = null;
+		try {
+			conn = config.getRemoteConnection();
+		} catch (MissingConnectionException e1) {
+			// Impossible to build includes properly without connection name
+			return;
+		}
+	  
+	  
     line = ToolCommandlineParser.trimLeadingWS(line);
-    final List<ICLanguageSettingEntry> entries = cmdlineParser.processArgs(cwd, line);
+    System.out.println("line: " + line);
+    List<ICLanguageSettingEntry> entries = cmdlineParser.processArgs(cwd, line);
     // attach settings to sourceFile resource...
     if (entries != null && entries.size() > 0) {
+    	
+    	
       for (ICLanguageSettingEntry entry : entries) {
         if (entry.getKind() == ICSettingEntry.INCLUDE_PATH) {
           /*
@@ -414,6 +480,15 @@ public class CompileCommandsJsonParser extends LanguageSettingsSerializableProvi
            * add these entries to the project resource to make them show up in
            * the UI in the includes folder...
            */
+        	
+          System.out.println( "entry: " + entry.getValue() + "/" + entry.getName() );
+          String newName = "//" + conn.getName() + entry.getName();
+          System.out.println( "new name: " + newName);
+          ICLanguageSettingEntry newEntry = CDataUtil.createCIncludePathEntry(newName,
+                  ICSettingEntry.BUILTIN | ICSettingEntry.READONLY);
+//          entries.remove(entry);
+//          entries.add(newEntry);
+          Collections.replaceAll(entries, entry, newEntry);
           storage.setSettingEntries((String) null, cmdlineParser.getLanguageId(), entries);
         }
       }
